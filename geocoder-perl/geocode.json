@@ -1,0 +1,537 @@
+#!/usr/bin/perl
+
+package Geocode2;
+
+use strict;
+use warnings;
+use CGI;
+
+use Date::Calc qw(Localtime);
+
+use lib '/var/www/okf/data/gis/1';
+use vars qw( @ISA );
+require JSONAPI;
+@ISA = qw( JSONAPI );
+
+use JSON;
+use Geo::Proj4;
+use Vector;
+use Math::Trig;
+
+use constant INPUT_PROFILE => {
+    optional => [qw( input address lat lng latlng language )],
+    # filters => [qw( trim )],
+    constraints => {
+    },
+};
+
+use constant WGS84_RADIUS => 6378137.0;
+use constant MINIMUM_DISTANCE => 25; # if the the distance to a road is shorter than x meters, the heading will be considered
+use constant MINIMUM_HEADING_DIFF => 15;
+use constant EPSILON => 0.00001;
+use constant IS_GIS_API => 1;    
+use constant FINLAND_NAMES => {
+    'fin' => 'Suomi',
+    'eng' => 'Finland',
+    'swe' => 'Finland',
+    'sme' => 'Suopma',
+    'smn' => 'Suopma',
+};
+Geocode2->instance->render(new CGI);
+
+sub renderPage {
+    my $self = shift;
+    my $cgi = shift;
+    
+    my $address = $self->{input}{address};
+    if (!defined $address) {
+	$address = $self->{input}{input};
+    }
+    my $latlng = $self->{input}{latlng};
+    my $lon = $self->{input}{lng};
+    my $lat = $self->{input}{lat};
+    my $language = $self->{input}{language};
+    my $db = $self->getMtkDB2;
+    my $proj = Geo::Proj4->new( proj => 'merc', ellps => 'WGS84' );
+
+    if (defined $latlng) {
+	$latlng =~ s/\s//g;
+	($lat, $lon) = split ',', $latlng;
+    }
+
+    if (defined $address) {
+	$address =~ s/,//g;
+
+	my @parts = split / /, $address;
+
+	print STDERR "parts = " . (join ', ', @parts) . "\n";
+
+	my ($area_name, $postcode, $number);
+	pop @parts if @parts && ($parts[-1] =~ /^finland$/i || $parts[-1] =~ /^suomi$/i || $parts[-1] =~ /^suopma$/);
+	$area_name = pop @parts if @parts > 1 && $parts[-1] !~ /^\d+$/;
+	$postcode = pop @parts if @parts && $parts[-1] =~ /^\d{5}$/;
+	$number = pop @parts if @parts && $parts[-1] =~ /^\d+$/;
+	
+	my $street = join ' ', @parts;
+	
+	my ($kunta_id, $kunta);
+	if (!$postcode && defined $area_name) {
+	    ($kunta_id, $kunta) = $self->getKuntaByName($area_name);
+	}
+
+	printf STDERR "search for address: street = %s, n = %s, kunta = %s\n", defined $street ? $street : 'n/a', defined $number ? $number : 'n/a', defined $kunta ? $kunta : 'n/a';
+
+	my %r;
+ 
+	my @data;
+	if ($kunta_id) {
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta_nro = ? AND name = ? }, $kunta_id, $street);
+	} elsif ($postcode) {
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name = ? }, $postcode, $postcode, $street);
+	} else {
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name = ? }, $street);
+	}
+	
+	print STDERR "rows = " . (scalar @data) . "\n";
+	    
+	my %best;
+	
+	for my $o (@data) {
+	    my $n = $o->{numbering};
+	    
+	    my ($selected, $is_best, $match, $is_inside, $difference);
+	    
+	    die "no kunta" if !$o->{kunta_nro};
+	    my $best_data = $best{$o->{kunta_nro}};
+
+	    if ($number) {
+		my $rem = $number % 2;
+		for my $s (values %$n) {
+		    if ($s->[0] && $s->[1] && $s->[0] < $s->[1] && $rem == $s->[0] % 2 && $rem == $s->[1] % 2) {
+			$selected = $s;
+			last;
+		    }
+		}
+	    }
+	    
+	    if ($selected) {
+		if ($number < $selected->[0]) {
+		    $match = $selected->[0];
+		} elsif ($number > $selected->[1]) {
+		    $match = $selected->[1];
+		} else {
+		    $match = $number;
+		}
+		$difference = $match - $number;
+		$is_inside = 1 if !$difference;
+		$is_best = 1 if $is_inside || !$best_data || (!$best_data->{is_inside} && (!defined $best_data->{difference} || abs($difference) < abs($best_data->{difference})));
+	    } else {
+		for my $s (values %$n) {
+		    if ($s->[0] && (!$match || $s->[0] < $match)) {
+			$selected = $s;
+			$match = $s->[0];
+			$difference = 0;		    
+		    }
+		}
+		$is_best = 1 if !$best_data || ($match && !$best_data->{is_inside} && (!$best_data->{match} || $match < $best_data->{match}));
+	    }
+	    if ($is_best || !$best_data) {
+		$best_data = $best{$o->{kunta_nro}} = {
+		    o => $o,
+		    is_inside => $is_inside,
+		    match => $match,
+		    selected => $selected,
+		    difference => $difference,
+		    kunta_nro => $o->{kunta_nro},
+		};
+		last if $best_data->{is_inside};
+	    }
+	}
+	my @results;
+	for my $best (values %best) {
+	    my $o = $best->{o};
+	    my $g = $o->{g};
+	    my $p;
+	    if ($best->{selected}) {
+		my $side = $best->{selected};
+		my $length = get_length(@$g);
+		my $slots = int (($side->[1] - $side->[0]) / 2);
+		my $slotlen = $length / ($slots + 1);
+		my $pos = (0.5 + int (($best->{match} - $side->[0]) / 2)) * $slotlen;
+		$p = travel_linestring($g, $pos);
+	    } elsif (defined $best->{difference} && $best->{difference} > 0) { # over
+		$p = $g->[-1];
+	    } else { # undef
+		$p = $g->[0];
+	    }
+	    if ($p) {
+		my $street_name = $o->{name};
+		my $area;
+		my $has_postcode;
+		if ($o->{postcode_left}) {
+		    $area = join ' ', grep { defined $_ } ($o->{postcode_left}, $o->{postname_left});
+		    $has_postcode = 1;
+		} elsif (defined $best->{kunta}) {
+		    $area = $best->{kunta};
+		} elsif (defined $best->{kunta_nro}) {
+		    die "error";
+		    $area = $self->getKuntaName($best->{kunta_nro});
+		    $area = $best->{kunta_nro} if !defined $area;
+		}
+		
+		my ($lat, $lon) = $proj->inverse(@$p);
+		
+		my @sources = {
+		    # oid => $o->{id},
+		    name => 'National Land Survey of Finland - Topographic Dataset (2013-03-08)',
+		    terms_of_use => "National Land Survey open data licence - version 1.0 - 1 May 2012\nhttp://www.maanmittauslaitos.fi/en/NLS_open_data_licence_version1_20120501",
+		};
+		if ($has_postcode) {
+		    push @sources, {
+			name => 'Itella perusosoitteisto (2014-02-01)',
+			terms_of_use => 'http://www.itella.fi/liitteet/palvelutjatuotteet/yhteystietopalvelut/Postinumeropalvelut-Palvelukuvausjakayttoehdot.pdf',
+		    };
+		}
+		
+		my $country;
+		# $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
+		$country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
+		$country = 'Finland' if !defined $country;
+		
+		push @results, {
+		    types => ['street_address'],
+		    address_components => [ ],
+		    formatted_address => $street_name . (defined $best->{match} ? ' ' . $best->{match} : '') . ', ' . $area . ', ' . $country,
+		    sources => \@sources,
+		    geometry => {
+			location_type => 'RANGE_INTERPOLATED',
+			location => {
+			    lat => $lat,
+			    lng => $lon
+			},
+		    },
+		};		    
+	    }
+	}
+	
+	$r{results} = \@results;
+	if (@results) {
+	    $r{status} = 'OK';
+	} else {
+	    $r{status} = 'ZERO_RESULTS';
+	}
+	$self->sendData($cgi, \%r);
+    } elsif (defined $lat && $lon) {
+	my %r;
+	my ($x, $y, $heading);
+
+	($x, $y) = $proj->forward($lat, $lon);
+	die "failed to project ($lat, $lon)" if !defined $x or !defined $y;
+	
+        my @boundary = $self->getBoundary($x, $y, 500);
+	
+	my $polygon = 'Polygon((' . (join ',', map {join ' ', @$_} @boundary) . '))';
+		
+	my @data0 = $self->fetchData('LINESTRING', 'SELECT id, kunta_nro, kunta, lang, postcode_left, postcode_right, postname_left, postname_right, name, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE MBRIntersects(GeomFromText(?), g)', $polygon );
+
+	my %data;
+	for my $data (@data0) {
+	    # print STDERR "lang = $data->{lang}\n";
+	    if (!$data{$data->{id}} || (defined $data->{lang} && defined $language && $data->{lang} eq $language)) {
+		$data{$data->{id}} = $data;
+	    }
+	}
+	
+	my $p0 = [$x, $y];
+	my @best;
+	for my $o (values %data) {
+	    
+	    my $shortest = get_closest_point($o, $p0);
+	    next if not $shortest;
+	    
+	    if ($shortest->{distance} <= MINIMUM_DISTANCE || !@best || $shortest->{distance} < $best[0]{distance}) {
+		# lets retain all results that are below minimun
+		# if none are, this one will be the only one
+		@best = grep { $_->{distance} < MINIMUM_DISTANCE } @best;
+		# and add this one to the mix
+		push @best, $shortest;
+	    }
+	}
+	my $best;
+	if (@best) {
+	    if (defined $heading) {
+		for (@best) {
+		    my $o = $_->{object} || die "no o";
+		    my $g = $o->{g} || die "no g";
+		    my @line = @$g[$_->{segment}..$_->{segment}+1];
+		    die "bad line" if @line != 2 or !$line[0] or !$line[1];
+		    # my $rad = get_heading_radians(@line);
+		    # my $h2 = $rad * 180.0 / pi;
+		    $_->{heading} = get_heading(@line, 1);
+		    $_->{heading_diff} = get_heading_diff($_->{heading}, $heading, 1);
+		    # print STDERR "x1 = $line[0][0], y1 = $line[0][1], x2 = $line[1][0], y2 = $line[1][1]\n";
+		    # print STDERR "1: h = $heading, this: n = $o->{AttrStreet}, d = $_->{distance}, h = $_->{heading}, hd = $_->{heading_diff}\n";
+		}
+		my @new = grep { $_->{heading_diff} < MINIMUM_HEADING_DIFF } @best;
+		if (@new) {
+		    @best = @new;
+		    # for (@best) {
+		    # print STDERR "2: h = $heading, this: n = $_->{objet}{AttrStreet}, d = $_->{distance}, h = $_->{heading}, hd = $_->{heading_diff}\n";
+		    # }
+		} else {
+		    ($best) = sort { $a->{heading_diff} <=> $b->{heading_diff} } @best;
+		}
+	    }
+	    ($best) = sort { $a->{distance} <=> $b->{distance} } @best;
+	}
+	if ($best) {
+	    my $o = $best->{object};
+	    my $segment = $best->{segment};
+	    my $g = $o->{g};
+	    my $sidenumbers = $o->{numbering};
+	    my $number;
+	    my $length = get_length(@$g);
+	    if ($length > EPSILON && (($sidenumbers->{left}[0] && $sidenumbers->{left}[1]) || ($sidenumbers->{right}[0] && $sidenumbers->{right}[1]))) {
+		my @line = @$g[$segment..$segment + 1];
+		my $linedir = get_heading(@line);
+		my $sidekey;
+		if (defined $heading) {
+		    # the heading is given and we pick the right side if the heading points along the road, left side otherwise
+		    my $d = get_heading_diff($linedir, $heading);
+		    $sidekey = $d < 90 ? 'right' : 'left';
+		} else {
+		    # no heading is given, and we pick whichever the side the point is on
+		    my $pointdir = get_heading($p0, $line[1]);
+		    my $a = ($pointdir - $linedir) % 360;
+		    $sidekey = $a <= 0 ? 'right' : 'left'; # RIKKI
+		}
+		my ($from, $to) = @{$sidenumbers->{$sidekey}};
+		if ($from != 0 && $to == $from) {
+		    $number = $from;
+		} elsif ($from != 0 && $to != 0) {
+		    my $slots = int ($to - $from) / 2; # välien lukumäärä = yks vähemmän kuin osoitteiden lukumäärä
+		    my $slotlen = $length / $slots;
+		    # $self->debug("sidekey = $sidekey, slots = $slots, slotlen = $slotlen");
+		    my $best2;
+		    for (my $n = $from; $n <= $to; $n += 2) {
+			my $tp = ($n - $from) / 2 * $slotlen;
+			my $new = travel_linestring($g, $tp);
+			my $d = get_length($new, $p0);
+			# $self->debug("n = $n, tp = $tp/$length, d = $d");
+			$best2 = { p => $new, d => $d, n => $n } if !$best2 or $d < $best2->{d};
+		    }
+		    $number = $best2->{n} if $best2;
+		}
+	    }
+	    
+	    my $street_name = $o->{name};
+	    my $area;
+	    my $has_postcode;
+	    if ($o->{postcode_left}) {
+		$area = join ' ', grep { defined $_ } ($o->{postcode_left}, $o->{postname_left});
+		$has_postcode = 1;
+	    } elsif (defined $o->{kunta}) {
+		$area = $o->{kunta};		
+	    } elsif ($o->{kunta_nro}) {
+		die "error";
+		$area = $self->getKuntaName($o->{kunta_nro}) || die "kunta $o->{kunta_nro} not found";		
+	    }
+	    
+	    # distance => $best->{distance},
+		
+	    my @sources = {
+		name => 'National Land Survey of Finland - Topographic Dataset (2013-03-08)',
+		terms_of_use => "National Land Survey open data licence - version 1.0 - 1 May 2012\nhttp://www.maanmittauslaitos.fi/en/NLS_open_data_licence_version1_20120501",
+	    };
+	    if ($has_postcode) {
+		push @sources, {
+		    name => 'Itella perusosoitteisto (2014-02-01)',
+		    terms_of_use => 'http://www.itella.fi/liitteet/palvelutjatuotteet/yhteystietopalvelut/Postinumeropalvelut-Palvelukuvausjakayttoehdot.pdf',
+		};
+	    }
+
+	    my $country;
+	    # $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
+	    $country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
+	    $country = 'Finland' if !defined $country;
+
+	    $r{status} = 'OK';
+	    $r{results} = [ {
+		types => ['street_address'],
+		formatted_address => $street_name . (defined $number ? ' ' . $number : '') . ', ' . $area . ', ' . $country,
+		address_components => [ ],
+		geometry => {
+		    location => {
+			lat => $lat,
+			lng => $lon,
+		    },
+		    location_type => 'RANGE_INTERPOLATED',
+		},
+		sources => \@sources
+			    } ],		    
+	}
+	if (!defined $r{status}) {
+	    $r{status} = 'ZERO_RESULTS';
+	    $r{results} = [];
+	}
+	$self->sendData($cgi, \%r);
+    } else {
+	my %r = ( status => 'ZERO_RESULTS', results => [] );
+	$self->sendData($cgi, \%r);
+    }
+
+}
+
+sub getKuntaByName {
+    my $self = shift;
+    my $name = shift;
+    my $db = $self->getMtkDB2;
+    my ($kunta_nro, $actual_name) = $db->query(q{ SELECT id, kunta_name_fin FROM kunta WHERE kunta_name_fin = ? OR kunta_name_swe = ? }, $name, $name)->list;
+    die "query: $@" if $@;
+    return wantarray ? ($kunta_nro, $actual_name) : $kunta_nro;
+}
+
+sub getKuntaName {
+    my $self = shift;
+    my $kunta_nro = shift;
+        
+    my $db = $self->getMtkDB2;
+    my $name = $db->query(q{ SELECT kunta_name_fin FROM kunta WHERE id = ? }, $kunta_nro)->list;
+    
+    return $name;
+}
+
+sub fetchData {
+    my $self = shift;
+    my ($required_type, $query, @params) = @_;
+    
+    my $db = $self->getMtkDB2;
+    my @o = $db->query($query, @params)->hashes;
+    die "query: $@" if $@;
+    
+    my @r;
+    for my $o (@o) {
+	die "no geodata" if not defined $o->{g};
+	die "bad data" if $o->{g} !~ /^([A-Z]+)\((.*)\)$/;
+	my ($type, $data) = ($1, $2);
+	next if defined $required_type && $required_type ne $type;
+	my %r = ( id => $o->{id},
+		  type => $type,
+		  %$o,
+		  );
+	if ($type eq 'LINESTRING') {
+	    $r{g} = [ map { [ split / / ] } split /,/, $data ];
+	} elsif ($type eq 'POLYGON') {
+	    $r{g} = [ map { [ split / / ] } split /,/, substr $data, 1, -1 ];
+	} else {
+	    die "bad geodata";
+	}
+
+	$r{numbering} = {
+	    left	=> [ $o->{fromleft}, $o->{toleft} ],
+	    right	=> [ $o->{fromright}, $o->{toright} ],
+	};
+
+	push @r, \%r;
+    }
+    
+    return @r;
+}
+
+sub get_heading_radians {
+    my ($p1, $p2) = @_;    
+    return atan2($p2->[1] - $p1->[1], $p2->[0] - $p1->[0]);
+}
+
+sub travel_linestring {
+    my ($line, $distance) = @_;
+    my $pos = $line->[0];
+    return $pos if $distance < 0;
+    for (my $i = 0; $i + 1 < @$line; $i++) {
+	my @s = @$line[$i..$i+1];
+	my $d = get_length(@s);
+	if ($d > $distance) {
+	    my $a = get_heading_radians(@s);
+	    return [$pos->[0] + $distance * cos $a, $pos->[1] + $distance * sin $a];
+	}
+	$distance -= $d;
+	$pos = $line->[$i + 1];
+    }
+    return $pos;
+}
+
+sub get_length {
+    my $len = 0;
+    for (my $i = 0; $i + 1 < @_; $i++) {
+	my ($x1, $y1) = @{$_[$i]};
+	my ($x2, $y2) = @{$_[$i+1]};
+	$len += sqrt(($x2 - $x1)**2 + ($y2 - $y1)**2);
+    }
+    return $len;
+}
+
+sub get_distance_from_line { # line AB, point C
+    my ($A, $B, $C) = @_;
+    
+    my $AB = new Vector($A, $B);
+    my $BA = new Vector($B, $A);
+    my $AC = new Vector($A, $C);
+    my $BC = new Vector($B, $C);
+    
+    my $AB_length = $AB->length;
+    return $AC->length if abs($AB_length) < EPSILON;   
+   
+    if ($AB->dot($BC) > 0) {
+	return $BC->length;
+    }
+    if ($BA->dot($AC) > 0) {
+	return $AC->length;
+    }
+    return abs ($AB->cross($AC) / $AB_length);
+}
+
+sub get_closest_point {
+    my ($o, $p) = @_;
+    my $g = $o->{g};
+    my $shortest;
+    for (my $i = 0; $i + 1 < @$g; $i++) {
+	my $d = get_distance_from_line($g->[$i], $g->[$i + 1], $p);
+	$shortest = { object => $o, distance => $d, segment => $i } if !$shortest or $d < $shortest->{distance};
+    }
+    return $shortest;
+}
+
+sub getBoundary {
+    my $self = shift;
+    my ($x, $y, $radius) = @_;
+
+    die "x not defined" if not defined $x;
+    die "y not defined" if not defined $y;
+    die "radius not defined" if not defined $radius;
+
+    my $minX = $x - $radius;
+    my $minY = $y - $radius;
+    my $maxX = $x + $radius;
+    my $maxY = $y + $radius;
+    
+    return ( [$minX, $minY],
+ 	     [$maxX, $minY],
+	     [$maxX, $maxY],
+ 	     [$minX, $maxY],
+ 	     [$minX, $minY],
+ 	     );    
+}
+
+sub get_heading {
+    my $a = -(get_heading_radians(@_) * 180.0 / pi) + 90;
+    $a += 360 if $a < 0; 
+    return sprintf '%.2f', $a;
+}
+
+sub get_heading_diff {
+    my ($h1, $h2, $bidirectional) = @_;
+    my $d = fmod(abs($h1 - $h2), 360);
+    $d = 360 - $d if $d > 180;
+    $d = 180 - $d if $bidirectional && $d > 90;
+    return $d;
+}
