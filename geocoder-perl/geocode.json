@@ -144,7 +144,7 @@ sub renderPage {
 		    difference => $difference,
 		    kunta_nro => $o->{kunta_nro},
 		};
-		last if $best_data->{is_inside};
+		# last if $best_data->{is_inside};
 	    }
 	}
 	my @results;
@@ -171,12 +171,8 @@ sub renderPage {
 		if ($o->{postcode_left}) {
 		    $area = join ' ', grep { defined $_ } ($o->{postcode_left}, $o->{postname_left});
 		    $has_postcode = 1;
-		} elsif (defined $best->{kunta}) {
-		    $area = $best->{kunta};
-		} elsif (defined $best->{kunta_nro}) {
-		    die "error";
-		    $area = $self->getKuntaName($best->{kunta_nro});
-		    $area = $best->{kunta_nro} if !defined $area;
+		} elsif (defined $o->{kunta}) {
+		    $area = $o->{kunta};
 		}
 		
 		my ($lat, $lon) = $proj->inverse(@$p);
