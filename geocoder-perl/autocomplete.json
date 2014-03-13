@@ -1,0 +1,203 @@
+#!/usr/bin/perl
+
+package AutoComplete;
+
+use strict;
+use warnings;
+use CGI;
+
+use lib '/var/www/okf/data/gis/1';
+use vars qw( @ISA );
+require JSONAPI;
+@ISA = qw( JSONAPI );
+
+use MIME::Base64 qw(encode_base64url);
+
+use constant INPUT_PROFILE => {
+    optional => [qw( input address input language )],
+    # filters => [qw( trim )],
+    constraints => {
+    },
+};
+
+use constant FINLAND_NAMES => {
+    'fin' => 'Suomi',
+    'eng' => 'Finland',
+    'swe' => 'Finland',
+    'sme' => 'Suopma',
+    'smn' => 'Suopma',
+};
+
+AutoComplete->instance->render(new CGI);
+
+sub renderPage {
+    my $self = shift;
+    my $cgi = shift;
+    
+    my $address = $self->{input}{address};
+    if (!defined $address) {
+	$address = $self->{input}{input};
+    }
+    my $language = $self->{input}{language};
+    my $db = $self->getMtkDB2;
+
+    if (defined $address) {
+	$address =~ s/,//g;
+
+	my @parts = split / /, $address;
+
+	print STDERR "parts = " . (join ', ', @parts) . "\n";
+
+	my ($area_name, $postcode, $number);
+	pop @parts if @parts && ($parts[-1] =~ /^finland$/i || $parts[-1] =~ /^suomi$/i || $parts[-1] =~ /^suopma$/);
+	$area_name = pop @parts if @parts > 1 && $parts[-1] !~ /^\d+$/;
+	$postcode = pop @parts if @parts && $parts[-1] =~ /^\d{5}$/;
+	$number = pop @parts if @parts && $parts[-1] =~ /^\d+$/;
+	
+	my $street = join ' ', @parts;
+	
+	my ($kunta_id, $kunta);
+	if (!$postcode && defined $area_name) {
+	    ($kunta_id, $kunta) = $self->getKuntaByName($area_name);
+	}
+
+	printf STDERR "search for address: street = %s, n = %s, kunta = %s\n", defined $street ? $street : 'n/a', defined $number ? $number : 'n/a', defined $kunta ? $kunta : 'n/a';
+
+	my %r;
+ 
+	my @data;
+	if ($kunta_id) {
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta_nro = ? AND name LIKE ? LIMIT 1000 }, $kunta_id, $street . '%');
+	} elsif ($postcode) {
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name LIKE ? LIMIT 1000 }, $postcode, $postcode, $street . '%');
+	} else {
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name LIKE ? LIMIT 1000 }, $street . '%');
+	}
+	
+	print STDERR "rows = " . (scalar @data) . "\n";
+	    
+	my %best;
+	
+	for my $o (@data) {
+	    my $n = $o->{numbering};
+	    
+	    my ($selected, $is_best, $match, $is_inside, $difference);
+	    
+	    die "no kunta" if !$o->{kunta_nro};
+	    my $best_data = $best{$o->{kunta_nro}};
+
+	    if ($number) {
+		my $rem = $number % 2;
+		for my $s (values %$n) {
+		    if ($s->[0] && $s->[1] && $s->[0] < $s->[1] && $rem == $s->[0] % 2 && $rem == $s->[1] % 2) {
+			$selected = $s;
+			last;
+		    }
+		}
+	    }
+	    
+	    if ($selected) {
+		if ($number < $selected->[0]) {
+		    $match = $selected->[0];
+		} elsif ($number > $selected->[1]) {
+		    $match = $selected->[1];
+		} else {
+		    $match = $number;
+		}
+		$difference = $match - $number;
+		$is_inside = 1 if !$difference;
+		$is_best = 1 if $is_inside || !$best_data || (!$best_data->{is_inside} && (!defined $best_data->{difference} || abs($difference) < abs($best_data->{difference})));
+	    } else {
+		for my $s (values %$n) {
+		    if ($s->[0] && (!$match || $s->[0] < $match)) {
+			$selected = $s;
+			$match = $s->[0];
+			$difference = 0;		    
+		    }
+		}
+		$is_best = 1 if !$best_data || ($match && !$best_data->{is_inside} && (!$best_data->{match} || $match < $best_data->{match}));
+	    }
+	    if ($is_best || !$best_data) {
+		$best_data = $best{$o->{kunta_nro}} = {
+		    o => $o,
+		    is_inside => $is_inside,
+		    match => $match,
+		    selected => $selected,
+		    difference => $difference,
+		    kunta_nro => $o->{kunta_nro},
+		};
+		# last if $best_data->{is_inside};
+	    }
+	}
+	my @predictions;
+	for my $best (values %best) {
+	    my $o = $best->{o};
+	    my $g = $o->{g};
+	    my $id = $o->{id};
+
+	    my $street_name = $o->{name};
+	    my $area;
+	    my $has_postcode;
+	    if ($o->{postcode_left}) {
+		$area = join ' ', grep { defined $_ } ($o->{postcode_left}, $o->{postname_left});
+		$has_postcode = 1;
+	    } elsif (defined $o->{kunta}) {
+		$area = $o->{kunta};
+	    }
+	    
+	    my @sources = {
+		name => 'National Land Survey of Finland - Topographic Dataset (2013-03-08)',
+		terms_of_use => "National Land Survey open data licence - version 1.0 - 1 May 2012\nhttp://www.maanmittauslaitos.fi/en/NLS_open_data_licence_version1_20120501",
+	    };
+	    if ($has_postcode) {
+		push @sources, {
+		    name => 'Itella perusosoitteisto (2014-02-01)',
+		    terms_of_use => 'http://www.itella.fi/liitteet/palvelutjatuotteet/yhteystietopalvelut/Postinumeropalvelut-Palvelukuvausjakayttoehdot.pdf',
+		};
+	    }
+	    
+	    my $country;
+	    # $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
+	    $country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
+	    $country = 'Finland' if !defined $country;
+	    
+	    my @terms;
+	    
+	    push @terms, $street_name . (defined $best->{match} ? ' ' . $best->{match} : '');
+	    push @terms, $area;
+	    push @terms, $country;
+	    
+	    my $description = '';
+	    my @terms2;
+	    for my $term (@terms) {
+		push @terms2, { value => $term, offset => length $description };
+		$description .= ', ' if length $description;
+		$description .= $term;
+	    }
+	    
+	    my $reference = pack 'N', $id;
+	    $reference .= pack 'N', $best->{match} if defined $best->{match};
+	    
+	    push @predictions, {
+		id => $id,
+		description => $description,
+		matched_substrings => [ ],
+		reference => encode_base64url($reference),
+		terms => \@terms2,
+		types => [ 'route', 'geocode' ],
+	    };		    
+	}
+	
+	$r{predictions} = \@predictions;
+	if (@predictions) {
+	    $r{status} = 'OK';
+	} else {
+	    $r{status} = 'ZERO_RESULTS';
+	}
+	$self->sendData($cgi, \%r);
+    } else {
+	my %r = ( status => 'INVALID_REQUEST', predictions => [] );
+	$self->sendData($cgi, \%r);
+    }
+
+}
