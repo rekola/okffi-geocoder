@@ -14,9 +14,10 @@ require JSONAPI;
 use Geo::Proj4;
 use Vector;
 use Math::Trig;
+use MIME::Base64 qw(decode_base64url);
 
 use constant INPUT_PROFILE => {
-    optional => [qw( input address lat lng latlng language )],
+    optional => [qw( input address lat lng latlng language reference )],
     # filters => [qw( trim )],
     constraints => {
     },
@@ -33,11 +34,12 @@ use constant FINLAND_NAMES => {
     'sme' => 'Suopma',
     'smn' => 'Suopma',
 };
-Geocode2->instance->render(new CGI);
+Geocode2->instance->render(new CGI, shift);
 
 sub renderPage {
     my $self = shift;
     my $cgi = shift;
+    my $r = shift;
     
     my $address = $self->{input}{address};
     if (!defined $address) {
@@ -49,45 +51,61 @@ sub renderPage {
     my $language = $self->{input}{language};
     my $db = $self->getMtkDB2;
     my $proj = Geo::Proj4->new( proj => 'merc', ellps => 'WGS84' );
+    my $reference = $self->{input}{reference};
 
     if (defined $latlng) {
 	$latlng =~ s/\s//g;
 	($lat, $lon) = split ',', $latlng;
     }
-
-    if (defined $address) {
-	$address =~ s/,//g;
-
-	my @parts = split / /, $address;
-
-	print STDERR "parts = " . (join ', ', @parts) . "\n";
-
-	my ($area_name, $postcode, $number);
-	pop @parts if @parts && ($parts[-1] =~ /^finland$/i || $parts[-1] =~ /^suomi$/i || $parts[-1] =~ /^suopma$/);
-	$area_name = pop @parts if @parts > 1 && $parts[-1] !~ /^\d+$/;
-	$postcode = pop @parts if @parts && $parts[-1] =~ /^\d{5}$/;
-	$number = pop @parts if @parts && $parts[-1] =~ /^\d+$/;
-	
-	my $street = join ' ', @parts;
-	
-	my ($kunta_id, $kunta);
-	if (!$postcode && defined $area_name) {
-	    ($kunta_id, $kunta) = $self->getKuntaByName($area_name);
-	}
-
-	printf STDERR "search for address: street = %s, n = %s, kunta = %s\n", defined $street ? $street : 'n/a', defined $number ? $number : 'n/a', defined $kunta ? $kunta : 'n/a';
-
+    
+    if (defined $address || defined $reference) {
+	my $number;
 	my %r;
- 
 	my @data;
-	if ($kunta_id) {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta_nro = ? AND name = ? }, $kunta_id, $street);
-	} elsif ($postcode) {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name = ? }, $postcode, $postcode, $street);
+	my $scalar_result = 0;
+	    
+	if (defined $address) {
+	    $address =~ s/,//g;
+	    
+	    my @parts = split / /, $address;
+	    
+	    print STDERR "parts = " . (join ', ', @parts) . "\n";
+	    
+	    my ($area_name, $postcode, $number);
+	    pop @parts if @parts && ($parts[-1] =~ /^finland$/i || $parts[-1] =~ /^suomi$/i || $parts[-1] =~ /^suopma$/);
+	    $area_name = pop @parts if @parts > 1 && $parts[-1] !~ /^\d+$/;
+	    $postcode = pop @parts if @parts && $parts[-1] =~ /^\d{5}$/;
+	    $number = pop @parts if @parts && $parts[-1] =~ /^\d+$/;
+	    
+	    my $street = join ' ', @parts;
+	    
+	    my ($kunta_id, $kunta);
+	    if (!$postcode && defined $area_name) {
+		($kunta_id, $kunta) = $self->getKuntaByName($area_name);
+	    }
+	    
+	    printf STDERR "search for address: street = %s, n = %s, kunta = %s\n", defined $street ? $street : 'n/a', defined $number ? $number : 'n/a', defined $kunta ? $kunta : 'n/a';
+	    
+	    if ($kunta_id) {
+		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta_nro = ? AND name = ? }, $kunta_id, $street);
+	    } elsif ($postcode) {
+		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name = ? }, $postcode, $postcode, $street);
+	    } else {
+		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name = ? }, $street);
+	    }
 	} else {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name = ? }, $street);
+	    $scalar_result = 1;
+
+	    my $d = decode_base64url($reference);
+	    die "error" if length($d) < 4;
+	    my ($id, $lc) = unpack 'NN', $d;
+	    $number = unpack 'N', substr $d, 8, 4 if length($d) >= 12;
+	    $language = 'fin';
+	    
+	    print STDERR "unpacked reference: id = $id, lc = $lc\n";
+
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE id = ? AND (lang IS NULL OR lang = ?) }, $id, $language);
 	}
-	
 	print STDERR "rows = " . (scalar @data) . "\n";
 	    
 	my %best;
@@ -205,14 +223,18 @@ sub renderPage {
 		};		    
 	    }
 	}
-	
-	$r{results} = \@results;
+
+	if ($scalar_result) {
+	    $r{result} = $results[0];
+	} else {
+	    $r{results} = \@results;
+	}
 	if (@results) {
 	    $r{status} = 'OK';
 	} else {
 	    $r{status} = 'ZERO_RESULTS';
 	}
-	$self->sendData($cgi, \%r);
+	$self->sendData($cgi, $r, \%r);
     } elsif (defined $lat && $lon) {
 	my %r;
 	my ($x, $y, $heading);
@@ -366,10 +388,10 @@ sub renderPage {
 	    $r{status} = 'ZERO_RESULTS';
 	    $r{results} = [];
 	}
-	$self->sendData($cgi, \%r);
+	$self->sendData($cgi, $r, \%r);
     } else {
 	my %r = ( status => 'ZERO_RESULTS', results => [] );
-	$self->sendData($cgi, \%r);
+	$self->sendData($cgi, $r, \%r);
     }
 
 }
