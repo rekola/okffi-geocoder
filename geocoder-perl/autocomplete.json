@@ -14,7 +14,7 @@ require JSONAPI;
 use MIME::Base64 qw(encode_base64url);
 
 use constant INPUT_PROFILE => {
-    optional => [qw( input address input language )],
+    optional => [qw( input address input language query )],
     # filters => [qw( trim )],
     constraints => {
     },
@@ -28,15 +28,19 @@ use constant FINLAND_NAMES => {
     'smn' => 'Suopma',
 };
 
-AutoComplete->instance->render(new CGI);
+AutoComplete->instance->render(new CGI, shift);
 
 sub renderPage {
     my $self = shift;
     my $cgi = shift;
+    my $r = shift;
     
     my $address = $self->{input}{address};
     if (!defined $address) {
 	$address = $self->{input}{input};
+    }
+    if (!defined $address) {
+	$address = $self->{input}{query};
     }
     my $language = $self->{input}{language};
     my $db = $self->getMtkDB2;
@@ -176,6 +180,7 @@ sub renderPage {
 	    }
 	    
 	    my $reference = pack 'N', $id;
+	    $reference .= pack 'N', 1;
 	    $reference .= pack 'N', $best->{match} if defined $best->{match};
 	    
 	    push @predictions, {
@@ -194,10 +199,10 @@ sub renderPage {
 	} else {
 	    $r{status} = 'ZERO_RESULTS';
 	}
-	$self->sendData($cgi, \%r);
+	$self->sendData($cgi, $r, \%r);
     } else {
 	my %r = ( status => 'INVALID_REQUEST', predictions => [] );
-	$self->sendData($cgi, \%r);
+	$self->sendData($cgi, $r, \%r);
     }
 
 }
