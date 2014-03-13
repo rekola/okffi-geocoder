@@ -16,10 +16,18 @@ sub sendError {
 }
 
 sub sendData {
-    my ($self, $cgi, $data) = @_;
+    my ($self, $cgi, $r, $data) = @_;
     
+    print STDERR "ss\n";
+
+    binmode STDOUT, ":utf8";
+
     my $json = JSON->new;
-    print $cgi->header('application/json');
+    print $cgi->header(
+	'-type' => 'application/json',
+	'-charset' => 'utf-8',
+	'-access_control_allow_origin' => '*',
+	);
     print $json->pretty->encode($data);
 
     return 1;
