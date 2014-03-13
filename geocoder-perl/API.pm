@@ -41,6 +41,7 @@ sub instance {
 sub render {
     my $self = shift;
     my $cgi = shift;
+    my $r = shift;
     
     # $self->{StartTime} = Time::HiRes::time;
 
@@ -61,28 +62,7 @@ sub render {
 	$self->{validateOK} = 0;
     }
 
-    return $self->renderPage($cgi);
-}
-    
-sub printHeader {
-    my $self = shift;
-    my $cgi = shift;
-    
-    print STDERR "cookies = " . scalar(@{$self->{cookies}}) . "\n";
-
-    if ($self->ALLOW_CACHE) {
-        print $cgi->header( -type => 'text/html',
-                            -charset => 'utf-8',
-			    -cookie => $self->{cookies},
-                            );
-    } else {
-        print $cgi->header( -type => 'text/html',
-                            -charset => 'utf-8',
-                            -pragma => 'no-cache',
-                            -expires => 'now',
-			    -cookie => $self->{cookies},
-                            );
-    }
+    return $self->renderPage($cgi, $r);
 }
 
 sub getMtkDB {
@@ -117,9 +97,6 @@ sub getMtkDB2 {
 
 sub initialize { }
 sub update { return 1; }
-sub copyData { return 1; }
-sub uploadData { return 1; }
-sub deleteData { return 1; }
 sub load { }
 
 sub setErrorText {
