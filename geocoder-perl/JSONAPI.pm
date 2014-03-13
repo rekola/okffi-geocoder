@@ -3,7 +3,8 @@ package JSONAPI;
 use strict;
 use warnings;
 
-use lib '/var/www/perl/api/1/text';
+use JSON;
+
 use vars qw( @ISA );
 require API;
 @ISA = qw( API );

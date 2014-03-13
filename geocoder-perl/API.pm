@@ -173,6 +173,83 @@ sub validate {
     return 1;
 }
 
+sub fetchData {
+    my $self = shift;
+    my ($required_type, $query, @params) = @_;
+    
+    my $db = $self->getMtkDB2;
+    my @o = $db->query($query, @params)->hashes;
+    die "query: $@" if $@;
+    
+    my @r;
+    for my $o (@o) {
+	die "no geodata" if not defined $o->{g};
+	die "bad data" if $o->{g} !~ /^([A-Z]+)\((.*)\)$/;
+	my ($type, $data) = ($1, $2);
+	next if defined $required_type && $required_type ne $type;
+	my %r = ( id => $o->{id},
+		  type => $type,
+		  %$o,
+		  );
+	if ($type eq 'LINESTRING') {
+	    $r{g} = [ map { [ split / / ] } split /,/, $data ];
+	} elsif ($type eq 'POLYGON') {
+	    $r{g} = [ map { [ split / / ] } split /,/, substr $data, 1, -1 ];
+	} else {
+	    die "bad geodata";
+	}
+
+	$r{numbering} = {
+	    left	=> [ $o->{fromleft}, $o->{toleft} ],
+	    right	=> [ $o->{fromright}, $o->{toright} ],
+	};
+
+	push @r, \%r;
+    }
+    
+    return @r;
+}
+
+sub getKuntaByName {
+    my $self = shift;
+    my $name = shift;
+    my $db = $self->getMtkDB2;
+    my ($kunta_nro, $actual_name) = $db->query(q{ SELECT id, kunta_name_fin FROM kunta WHERE kunta_name_fin = ? OR kunta_name_swe = ? }, $name, $name)->list;
+    die "query: $@" if $@;
+    return wantarray ? ($kunta_nro, $actual_name) : $kunta_nro;
+}
+
+sub getKuntaName {
+    my $self = shift;
+    my $kunta_nro = shift;
+        
+    my $db = $self->getMtkDB2;
+    my $name = $db->query(q{ SELECT kunta_name_fin FROM kunta WHERE id = ? }, $kunta_nro)->list;
+    
+    return $name;
+}
+
+sub getBoundary {
+    my $self = shift;
+    my ($x, $y, $radius) = @_;
+
+    die "x not defined" if not defined $x;
+    die "y not defined" if not defined $y;
+    die "radius not defined" if not defined $radius;
+
+    my $minX = $x - $radius;
+    my $minY = $y - $radius;
+    my $maxX = $x + $radius;
+    my $maxY = $y + $radius;
+    
+    return ( [$minX, $minY],
+ 	     [$maxX, $minY],
+	     [$maxX, $maxY],
+ 	     [$minX, $maxY],
+ 	     [$minX, $minY],
+ 	     );    
+}
+
 sub getErrorText { $_[0]{errortext}; }
 sub input { $_[0]{input}; }
 
