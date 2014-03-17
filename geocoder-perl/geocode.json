@@ -180,13 +180,17 @@ sub renderPage {
 	    }
 	    if ($p) {
 		my $street_name = $o->{name};
-		my $area;
+		my $post_area;
 		my $has_postcode;
+		my $postcode;
+		my $admin_area;
 		if ($o->{postcode_left}) {
-		    $area = join ' ', grep { defined $_ } ($o->{postcode_left}, $o->{postname_left});
+		    $postcode = $o->{postcode_left};
+		    $post_area = join ' ', grep { defined $_ } ($postcode, $o->{postname_left});
 		    $has_postcode = 1;
-		} elsif (defined $o->{kunta}) {
-		    $area = $o->{kunta};
+		}
+		if (defined $o->{kunta}) {
+		    $admin_area = $o->{kunta};
 		}
 		
 		my ($lat, $lon) = $proj->inverse(@$p);
@@ -204,22 +208,33 @@ sub renderPage {
 		}
 		
 		my $country;
-		# $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
-		$country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
-		$country = 'Finland' if !defined $country;
+		my $country_short = 'FI';
+		if ($country_short eq 'FI') {
+		    # $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
+		    $country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
+		    $country = 'Finland' if !defined $country;
+		}
 		
+		my @address_components;
+		push @address_components, { long_name => $best->{match}, short_name => $best->{match}, types => [ 'street_number' ] } if defined $best->{match};
+		push @address_components, { long_name => $street_name, short_name => $street_name, types => [ 'route' ] };
+		push @address_components, { long_name => $admin_area, short_name => $admin_area, types => [ 'administrative_area_level_3', 'political' ] } if defined $admin_area;
+		push @address_components, { long_name => $postcode, short_name => $postcode, types => [ 'postal_code' ] } if defined $postcode;
+		push @address_components, { long_name => $country, short_name => $country_short, types => [ 'country', 'political' ] }; 
+						
 		push @results, {
 		    types => ['street_address'],
 		    address_components => [ ],
-		    formatted_address => $street_name . (defined $best->{match} ? ' ' . $best->{match} : '') . ', ' . $area . ', ' . $country,
+		    formatted_address => $street_name . (defined $best->{match} ? ' ' . $best->{match} : '') . ', ' . (defined $post_area ? $post_area : $admin_area) . ', ' . $country,
 		    sources => \@sources,
+		    address_components => \@address_components,
 		    geometry => {
 			location_type => 'RANGE_INTERPOLATED',
 			location => {
 			    lat => $lat,
 			    lng => $lon
 			},
-		    },
+		    },			       
 		};		    
 	    }
 	}
