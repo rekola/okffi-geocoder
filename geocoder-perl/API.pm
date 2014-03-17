@@ -43,6 +43,10 @@ sub render {
     my $cgi = shift;
     my $r = shift;
     
+    if ($ENV{REQUEST_METHOD} eq 'OPTIONS') {
+	return $self->sendOptions;
+    }
+
     # $self->{StartTime} = Time::HiRes::time;
 
     $self->{errortext} = undef;
@@ -244,6 +248,7 @@ sub CATNAME { return 'default'; }
 sub NEED_ADMIN { return 0; }
 
 sub sendError { die "subclass responsibility"; }
+sub sendOptions { }
 
 use constant ALLOW_CACHE => 1;
 
