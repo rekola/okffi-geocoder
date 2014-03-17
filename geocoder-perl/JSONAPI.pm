@@ -15,6 +15,15 @@ sub sendError {
     return $self->sendData( $cgi, { error => { error_code => $error_code, error_text => $error_text, params => $query } } );
 }
 
+sub sendOptions {
+    my ($self, $cgi) = @_;
+    print $cgi->header(
+	'-type' => 'application/json',
+	'-charset' => 'utf-8',
+	'-access_control_allow_origin' => '*',
+	);    
+}
+
 sub sendData {
     my ($self, $cgi, $r, $data) = @_;
     
