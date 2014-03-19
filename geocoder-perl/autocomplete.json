@@ -80,15 +80,11 @@ sub renderPage {
 	my %r;
 	my $admin_areas = $components{administrative_area};
  
-	my @data;
-	if (defined $area_name) {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta LIKE ? AND name LIKE ? LIMIT 10000 }, $area_name . '%', $street . '%');
-	} elsif ($postcode) {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name LIKE ? LIMIT 10000 }, $postcode, $postcode, $street . '%');
-	} elsif ($admin_areas) {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name LIKE ? AND kunta IN ( } . (join ', ', map { '?' } @$admin_areas) . q{ ) LIMIT 10000 }, $street . '%', @$admin_areas) if @$admin_areas;
-	} else {
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name LIKE ? LIMIT 10000 }, $street . '%');
+	my @data = $self->loadAddressData($street, $area_name, $postcode, $admin_areas);
+	if (!@data && defined $area_name && !defined $number && !defined $postcode) {
+	    $street .= ' ' . $area_name;
+	    $area_name = undef;
+	    @data = $self->loadAddressData($street, $area_name, $postcode, $admin_areas);
 	}
 	
 	print STDERR "rows = " . (scalar @data) . "\n";
@@ -106,7 +102,7 @@ sub renderPage {
 	    if ($number) {
 		my $rem = $number % 2;
 		for my $s (values %$n) {
-		    if ($s->[0] && $s->[1] && $s->[0] < $s->[1] && $rem == $s->[0] % 2 && $rem == $s->[1] % 2) {
+		    if ($s->[0] && $s->[1] && $s->[0] <= $s->[1] && $rem == $s->[0] % 2 && $rem == $s->[1] % 2) {
 			$selected = $s;
 			last;
 		    }
@@ -227,6 +223,22 @@ sub renderPage {
     } else {
 	my %r = ( status => 'INVALID_REQUEST', predictions => [] );
 	$self->sendData($cgi, $r, \%r);
+    }
+
+}
+
+sub loadAddressData {
+    my $self = shift;
+    my ($street, $area_name, $postcode, $admin_areas) = @_;
+
+    if (defined $area_name) {
+	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta LIKE ? AND name LIKE ? LIMIT 10000 }, $area_name . '%', $street . '%');
+    } elsif ($postcode) {
+	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name LIKE ? LIMIT 10000 }, $postcode, $postcode, $street . '%');
+    } elsif ($admin_areas) {
+	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name LIKE ? AND kunta IN ( } . (join ', ', map { '?' } @$admin_areas) . q{ ) LIMIT 10000 }, $street . '%', @$admin_areas) if @$admin_areas;
+    } else {
+	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name LIKE ? LIMIT 10000 }, $street . '%');
     }
 
 }

@@ -121,7 +121,7 @@ sub renderPage {
 	    if ($number) {
 		my $rem = $number % 2;
 		for my $s (values %$n) {
-		    if ($s->[0] && $s->[1] && $s->[0] < $s->[1] && $rem == $s->[0] % 2 && $rem == $s->[1] % 2) {
+		    if ($s->[0] && $s->[1] && $s->[0] <= $s->[1] && $rem == $s->[0] % 2 && $rem == $s->[1] % 2) {
 			$selected = $s;
 			last;
 		    }
