@@ -232,7 +232,7 @@ sub loadAddressData {
     my ($street, $area_name, $postcode, $admin_areas) = @_;
 
     if (defined $area_name) {
-	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta LIKE ? AND name LIKE ? LIMIT 10000 }, $area_name . '%', $street . '%');
+	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta LIKE ? AND name = ? LIMIT 10000 }, $area_name . '%', $street);
     } elsif ($postcode) {
 	return $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name LIKE ? LIMIT 10000 }, $postcode, $postcode, $street . '%');
     } elsif ($admin_areas) {
