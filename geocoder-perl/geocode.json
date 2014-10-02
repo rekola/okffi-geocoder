@@ -71,7 +71,7 @@ sub renderPage {
 	    
 	    print STDERR "parts = " . (join ', ', @parts) . "\n";
 	    
-	    my ($area_name, $postcode, $number);
+	    my ($area_name, $postcode);
 	    pop @parts if @parts && ($parts[-1] =~ /^finland$/i || $parts[-1] =~ /^suomi$/i || $parts[-1] =~ /^suopma$/);
 	    $area_name = pop @parts if @parts > 1 && $parts[-1] !~ /^\d+$/;
 	    $postcode = pop @parts if @parts && $parts[-1] =~ /^\d{5}$/;
