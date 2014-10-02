@@ -1,7 +1,8 @@
 #!/usr/bin/perl
 
-package Geocode2;
+package Geocode3;
 
+use utf8;
 use strict;
 use warnings;
 use CGI;
@@ -34,7 +35,7 @@ use constant FINLAND_NAMES => {
     'sme' => 'Suopma',
     'smn' => 'Suopma',
 };
-Geocode2->instance->render(new CGI, shift);
+Geocode3->instance->render(new CGI, shift);
 
 sub renderPage {
     my $self = shift;
@@ -49,7 +50,7 @@ sub renderPage {
     my $lon = $self->{input}{lng};
     my $lat = $self->{input}{lat};
     my $language = $self->{input}{language};
-    my $db = $self->getMtkDB2;
+    my $db = $self->getMtkDB3;
     my $proj = Geo::Proj4->new( proj => 'merc', ellps => 'WGS84' );
     my $reference = $self->{input}{reference};
 
@@ -87,11 +88,11 @@ sub renderPage {
 	    printf STDERR "search for address: street = %s, n = %s, kunta = %s\n", defined $street ? $street : 'n/a', defined $number ? $number : 'n/a', defined $kunta ? $kunta : 'n/a';
 	    
 	    if ($kunta_id) {
-		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE kunta_nro = ? AND name = ? }, $kunta_id, $street);
+		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, has_irregular_house_numbers, AsText(g) AS g FROM geocoding WHERE kunta_nro = ? AND name = ? }, $kunta_id, $street);
 	    } elsif ($postcode) {
-		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name = ? }, $postcode, $postcode, $street);
+		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, has_irregular_house_numbers, AsText(g) AS g FROM geocoding WHERE (postcode_left = ? OR postcode_right = ?) AND name = ? }, $postcode, $postcode, $street);
 	    } else {
-		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE name = ? }, $street);
+		@data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, has_irregular_house_numbers, AsText(g) AS g FROM geocoding WHERE name = ? }, $street);
 	    }
 	} else {
 	    $scalar_result = 1;
@@ -166,17 +167,29 @@ sub renderPage {
 	    my $o = $best->{o};
 	    my $g = $o->{g};
 	    my $p;
-	    if ($best->{selected}) {
-		my $side = $best->{selected};
-		my $length = get_length(@$g);
-		my $slots = int (($side->[1] - $side->[0]) / 2);
-		my $slotlen = $length / ($slots + 1);
-		my $pos = (0.5 + int (($best->{match} - $side->[0]) / 2)) * $slotlen;
-		$p = travel_linestring($g, $pos);
-	    } elsif (defined $best->{difference} && $best->{difference} > 0) { # over
-		$p = $g->[-1];
-	    } else { # undef
-		$p = $g->[0];
+	    my $location_type = 'RANGE_INTERPOLATED';
+	    my $has_point_addresses;
+	    if ($o->{has_irregular_house_numbers} && $best->{match}) {
+		my $geom = $db->query(q{ SELECT AsText(g) AS g FROM irregular_house_numbers WHERE object_id = ? AND n = ? }, $best->{o}{id}, $best->{match})->list;
+		if (defined $geom && $geom =~ /^POINT\(([+-]?\d+\.\d+) ([+-]?\d+\.\d+)\)$/) {
+		    $p = [ $1, $2 ];
+		    $location_type = 'ROOFTOP';
+		    $has_point_addresses = 1;
+		}
+	    }
+	    if (!$p) {
+		if ($best->{selected}) {
+		    my $side = $best->{selected};
+		    my $length = get_length(@$g);
+		    my $slots = int (($side->[1] - $side->[0]) / 2);
+		    my $slotlen = $length / ($slots + 1);
+		    my $pos = (0.5 + int (($best->{match} - $side->[0]) / 2)) * $slotlen;
+		    $p = travel_linestring($g, $pos);
+		} elsif (defined $best->{difference} && $best->{difference} > 0) { # over
+		    $p = $g->[-1];
+		} else { # undef
+		    $p = $g->[0];
+		}
 	    }
 	    if ($p) {
 		my $street_name = $o->{name};
@@ -195,17 +208,25 @@ sub renderPage {
 		
 		my ($lat, $lon) = $proj->inverse(@$p);
 		
-		my @sources = {
-		    # oid => $o->{id},
-		    name => 'National Land Survey of Finland - Topographic Dataset (2013-03-08)',
-		    terms_of_use => "National Land Survey open data licence - version 1.0 - 1 May 2012\nhttp://www.maanmittauslaitos.fi/en/NLS_open_data_licence_version1_20120501",
-		};
+		my @sources;
+		if ($has_point_addresses) {
+		    push @sources, {
+			name => 'Pääkaupunkiseudun seudullinen osoiteluettelo',
+			terms_of_use => '© Helsingin, Espoon, Vantaan, Kauniaisten kuntien mittausosastot, 2014\nhttp://ptp.hel.fi/avoindata/aineistot/Seudullinen_avoimen_tietoaineiston_lisenssi_1.0.pdf'
+		    };
+		} else {
+		    push @sources, {
+			# oid => $o->{id},
+			name => 'National Land Survey of Finland - Topographic Dataset (2013-03-08)',
+			terms_of_use => "National Land Survey open data licence - version 1.0 - 1 May 2012\nhttp://www.maanmittauslaitos.fi/en/NLS_open_data_licence_version1_20120501",
+		    };
+		}
 		if ($has_postcode) {
 		    push @sources, {
 			name => 'Itella perusosoitteisto (2014-02-01)',
 			terms_of_use => 'http://www.itella.fi/liitteet/palvelutjatuotteet/yhteystietopalvelut/Postinumeropalvelut-Palvelukuvausjakayttoehdot.pdf',
 		    };
-		}
+		}	       
 		
 		my $country;
 		my $country_short = 'FI';
@@ -229,7 +250,7 @@ sub renderPage {
 		    sources => \@sources,
 		    address_components => \@address_components,
 		    geometry => {
-			location_type => 'RANGE_INTERPOLATED',
+			location_type => $location_type,
 			location => {
 			    lat => $lat,
 			    lng => $lon
