@@ -29,6 +29,11 @@ sub main {
     
     # katunimi,osoitenumero,osoitenumero2,osoitekirjain,N,E,kaupunki,gatan,staden,tyyppi,tyyppi_selite
 
+    my $db_name = 'mtk_2013';
+    my $db = DBIx::Simple->connect( "DBI:mysql:database=$db_name", $user, $password, { RaiseError => 1 }) or die "connect: $@";
+    $db->{lc_columns} = 0;
+    $db->query(q{ SET NAMES 'utf8' });
+
     my $csv = Text::CSV->new or die "Cannot use CSV: ".Text::CSV->error_diag ();
     open my $fh, "<:encoding(iso8859-1)", $file;
  
@@ -63,20 +68,24 @@ sub main {
     	push @{$kunta{$city}{$street}}, \%data;
     }
 
-    my $db_name = 'mtk_2013';
-    my $db = DBIx::Simple->connect( "DBI:mysql:database=$db_name", $user, $password, { RaiseError => 1 }) or die "connect: $@";
-    $db->{lc_columns} = 0;
-    $db->query(q{ SET NAMES 'utf8' });
+    my $missing_roads_count = 0;
+    my $lost_numbers_count = 0;
+    my $total_numbers_count = 0;
 
+    my %target_seq;
+    
     while (my ($kunta, $d1) = each %kunta) {
 	while (my ($street, $rows) = each %$d1) {
 	    my @obj = $db->query(q{ SELECT * FROM geocoding WHERE name = ? AND lang = 'fin' AND kunta = ? }, $street, $kunta)->hashes;
 	    if (!@obj) {
 		print STDERR "could not find road $kunta/$street: " . scalar(@$rows) . "\n";
+		$missing_roads_count++;
+		$lost_numbers_count += scalar @$rows;
 		next;
 	    }
 	    print STDERR "handling rows for road $kunta/$street: " . scalar(@$rows) . "\n";
-	    my $seqnr = 1;
+	    $total_numbers_count += scalar @$rows;
+	    my $n = 0;
 	    for my $row (sort { $a->{osoitenumero} <=> $b->{osoitenumero} } @$rows) {
 		my $n = $row->{osoitenumero};
 		my $rem = $n % 2;
@@ -97,8 +106,26 @@ sub main {
 		    next;
 		} 
 		print STDERR "  * storing address $kunta/$street/$n\n";
-		$db->query(q{ INSERT INTO irregular_house_numbers (id, seqnr, n, n2, door, g, sol) VALUES (?, ?, ?, ?, ?, GeomFromText(?), ?) }, $found->{id}, $seqnr++, $n, $row->{osoitenumero2}, $row->{osoitekirjain}, 'Point(' . $row->{x} . ' ' . $row->{y} . ')', $sol);
+		if (!$n) {
+		    $db->begin;		    
+		}
+		my $seqnr = $target_seq{$found->{id}}++;
+		$db->query(q{ INSERT INTO irregular_house_numbers (object_id, seqnr, n, n2, letter, g, sol) VALUES (?, ?, ?, ?, ?, GeomFromText(?), ?) }, $found->{id}, $seqnr, $n, $row->{osoitenumero2}, $row->{osoitekirjain}, 'Point(' . $row->{x} . ' ' . $row->{y} . ')', $sol);
+		$n++;
+	    }
+	    if ($n) {
+		$db->commit;
 	    }
 	}
     }
+
+    print STDERR "updating flags\n";
+    
+    $db->begin;
+    for my $id (keys %target_seq) {
+	$db->query(q{ UPDATE geocoding SET has_irregular_house_numbers = 1 WHERE id = ? }, $id - 0);
+    }
+    $db->commit;
+    
+    print STDERR "missing = $missing_roads_count, lost = $lost_numbers_count / $total_numbers_count\n";
 }
