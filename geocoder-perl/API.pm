@@ -8,7 +8,6 @@ use DBIx::Simple;
 use Carp;
 use Date::Calc qw(Localtime Mktime Delta_Days);
 use Data::FormValidator;
-use Data::Dumper;
 
 use Encode;
 
