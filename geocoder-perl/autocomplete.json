@@ -12,7 +12,7 @@ require JSONAPI;
 @ISA = qw( JSONAPI );
 
 use MIME::Base64 qw(encode_base64url);
-use Data::Dumper;
+
 use constant INPUT_PROFILE => {
     optional => [qw( input address input language query components )],
     # filters => [qw( trim )],
@@ -52,8 +52,6 @@ sub renderPage {
 	    $components{$key} = [ split ',', $value ];
 	}
     }
-
-    print STDERR Dumper(\%components);
 
     if (defined $address) {
 	$address =~ s/,//g;
