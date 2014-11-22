@@ -68,21 +68,6 @@ sub render {
     return $self->renderPage($cgi, $r);
 }
 
-sub getMtkDB {
-    my $self = shift;
-    if (!$API::db3) {
-	my $dbname = 'mtk_2012';
-	my $user = 'gisuser';
-	my $password = 'o92x3iytH';
-	my $db = DBIx::Simple->connect( "DBI:mysql:database=$dbname", $user, $password, { RaiseError => 1 }) or die "connect: $@";
-	$db->{lc_columns} = 0;
-	$db->{dbh}{mysql_enable_utf8} = 1;
-	$db->query(q{ SET NAMES 'utf8mb4' });
-	$API::db3 = $db;
-    }
-    return $API::db3;
-}
-
 sub getMtkDB2 {
     my $self = shift;
     if (!$API::db4) {
@@ -96,6 +81,21 @@ sub getMtkDB2 {
 	$API::db4 = $db;
     }
     return $API::db4;
+}
+
+sub getMtkDB3 {
+    my $self = shift;
+    if (!$API::db3) {
+	my $dbname = 'mtk_2013c';
+	my $user = 'gisuser';
+	my $password = 'o92x3iytH';
+	my $db = DBIx::Simple->connect( "DBI:mysql:database=$dbname", $user, $password, { RaiseError => 1 }) or die "connect: $@";
+	$db->{lc_columns} = 0;
+	$db->{dbh}{mysql_enable_utf8} = 1;
+	$db->query(q{ SET NAMES 'utf8mb4' });
+	$API::db3 = $db;
+    }
+    return $API::db3;
 }
 
 sub initialize { }
@@ -157,7 +157,7 @@ sub fetchData {
     my $self = shift;
     my ($required_type, $query, @params) = @_;
     
-    my $db = $self->getMtkDB2;
+    my $db = $self->getMtkDB3;
     my @o = $db->query($query, @params)->hashes;
     die "query: $@" if $@;
     
