@@ -105,7 +105,7 @@ sub renderPage {
 	    
 	    print STDERR "unpacked reference: id = $id, lc = $lc\n";
 
-	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g FROM geocoding WHERE id = ? AND (lang IS NULL OR lang = ?) }, $id, $language);
+	    @data = $self->fetchData('LINESTRING', q{ SELECT id, postcode_left, postcode_right, postname_left, postname_right, name, lang, kunta_nro, kunta, fromleft, toleft, fromright, toright, AsText(g) AS g, has_irregular_house_numbers FROM geocoding WHERE id = ? AND (lang IS NULL OR lang = ?) }, $id, $language);
 	}
 	print STDERR "rows = " . (scalar @data) . "\n";
 	    
@@ -172,6 +172,7 @@ sub renderPage {
 	    if ($o->{has_irregular_house_numbers} && $best->{match}) {
 		my $geom = $db->query(q{ SELECT AsText(g) AS g FROM irregular_house_numbers WHERE object_id = ? AND n = ? }, $best->{o}{id}, $best->{match})->list;
 		if (defined $geom && $geom =~ /^POINT\(([+-]?\d+\.\d+) ([+-]?\d+\.\d+)\)$/) {
+		    print STDERR "found point address\n";
 		    $p = [ $1, $2 ];
 		    $location_type = 'ROOFTOP';
 		    $has_point_addresses = 1;
@@ -210,10 +211,17 @@ sub renderPage {
 		
 		my @sources;
 		if ($has_point_addresses) {
-		    push @sources, {
-			name => 'Pääkaupunkiseudun seudullinen osoiteluettelo',
-			terms_of_use => '© Helsingin, Espoon, Vantaan, Kauniaisten kuntien mittausosastot, 2014\nhttp://ptp.hel.fi/avoindata/aineistot/Seudullinen_avoimen_tietoaineiston_lisenssi_1.0.pdf'
-		    };
+		    if (defined $best->{kunta_nro} && $best->{kunta_nro} == 564) {
+			push @sources, {
+			    name => 'Oulun kaupungin karttapalvelun osoitteet',
+			    terms_of_use => "© Oulun kaupunki, 2014-10-27\nhttp://www.ouka.fi/oulu/oulu-tietoa/kayttoehdot",
+			};
+		    } else {
+			push @sources, {
+			    name => 'Pääkaupunkiseudun seudullinen osoiteluettelo',
+			    terms_of_use => "© Helsingin, Espoon, Vantaan, Kauniaisten kuntien mittausosastot, 2014\nhttp://ptp.hel.fi/avoindata/aineistot/Seudullinen_avoimen_tietoaineiston_lisenssi_1.0.pdf"
+			};
+		    }
 		} else {
 		    push @sources, {
 			# oid => $o->{id},
