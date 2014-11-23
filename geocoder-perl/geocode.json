@@ -252,8 +252,7 @@ sub renderPage {
 		push @address_components, { long_name => $country, short_name => $country_short, types => [ 'country', 'political' ] }; 
 						
 		push @results, {
-		    types => ['street_address'],
-		    address_components => [ ],
+		    types => ['street_address'],		    
 		    formatted_address => $street_name . (defined $best->{match} ? ' ' . $best->{match} : '') . ', ' . (defined $post_area ? $post_area : $admin_area) . ', ' . $country,
 		    sources => \@sources,
 		    address_components => \@address_components,
@@ -385,19 +384,27 @@ sub renderPage {
 	    my $street_name = $o->{name};
 	    my $area;
 	    my $has_postcode;
+	    my $admin_area;
+	    my $post_area;
+	    my $postcode;
+	    if (defined $o->{kunta}) {
+		$admin_area = $o->{kunta};
+	    }
+
 	    if ($o->{postcode_left}) {
+		$postcode = $o->{postcode_left};
+		$post_area = $o->{postname_left};
 		$area = join ' ', grep { defined $_ } ($o->{postcode_left}, $o->{postname_left});
 		$has_postcode = 1;
 	    } elsif (defined $o->{kunta}) {
-		$area = $o->{kunta};		
-	    } elsif ($o->{kunta_nro}) {
-		die "error";
-		$area = $self->getKuntaName($o->{kunta_nro}) || die "kunta $o->{kunta_nro} not found";		
+		$area = $admin_area;
 	    }
 	    
 	    # distance => $best->{distance},
 		
 	    my @sources = {
+		# oid => $o->{id},
+		# distance => $best->{distance},
 		name => 'National Land Survey of Finland - Topographic Dataset (2013-03-08)',
 		terms_of_use => "National Land Survey open data licence - version 1.0 - 1 May 2012\nhttp://www.maanmittauslaitos.fi/en/NLS_open_data_licence_version1_20120501",
 	    };
@@ -409,15 +416,25 @@ sub renderPage {
 	    }
 
 	    my $country;
-	    # $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
-	    $country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
-	    $country = 'Finland' if !defined $country;
+	    my $country_short = 'FI';
+	    if ($country_short eq 'FI') {
+		# $country = FINLAND_NAMES->{$o->{lang}} if defined $o->{lang};
+		$country = FINLAND_NAMES->{$language} if !defined $country && defined $language;
+		$country = 'Finland' if !defined $country;
+	    }
+
+	    my @address_components;
+	    push @address_components, { long_name => $best->{match}, short_name => $best->{match}, types => [ 'street_number' ] } if defined $best->{match};
+	    push @address_components, { long_name => $street_name, short_name => $street_name, types => [ 'route' ] } if defined $street_name;
+	    push @address_components, { long_name => $admin_area, short_name => $admin_area, types => [ 'administrative_area_level_3', 'political' ] } if defined $admin_area;
+	    push @address_components, { long_name => $postcode, short_name => $postcode, types => [ 'postal_code' ] } if defined $postcode;
+	    push @address_components, { long_name => $country, short_name => $country_short, types => [ 'country', 'political' ] }; 
 
 	    $r{status} = 'OK';
 	    $r{results} = [ {
 		types => ['street_address'],
-		formatted_address => $street_name . (defined $number ? ' ' . $number : '') . ', ' . $area . ', ' . $country,
-		address_components => [ ],
+		formatted_address => (join ', ', (defined $street_name ? $street_name . (defined $number ? ' ' . $number : '') : ()), $area, $country),
+		address_components => \@address_components,
 		geometry => {
 		    location => {
 			lat => $lat,
