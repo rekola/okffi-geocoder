@@ -43,7 +43,7 @@ sub renderPage {
 	$address = $self->{input}{query};
     }
     my $language = $self->{input}{language};
-    my $db = $self->getMtkDB2;
+    my $db = $self->getMtkDB3;
     my $components_text = $self->{input}{components};
     my %components;
     if (defined $components_text) {

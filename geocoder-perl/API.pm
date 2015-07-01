@@ -68,27 +68,12 @@ sub render {
     return $self->renderPage($cgi, $r);
 }
 
-sub getMtkDB2 {
-    my $self = shift;
-    if (!$API::db4) {
-	my $dbname = 'mtk_2013';
-	my $user = 'gisuser';
-	my $password = 'o92x3iytH';
-	my $db = DBIx::Simple->connect( "DBI:mysql:database=$dbname", $user, $password, { RaiseError => 1 }) or die "connect: $@";
-	$db->{lc_columns} = 0;
-	$db->{dbh}{mysql_enable_utf8} = 1;
-	$db->query(q{ SET NAMES 'utf8mb4' });
-	$API::db4 = $db;
-    }
-    return $API::db4;
-}
-
 sub getMtkDB3 {
     my $self = shift;
     if (!$API::db3) {
-	my $dbname = 'mtk_2013c';
-	my $user = 'gisuser';
-	my $password = 'o92x3iytH';
+    my $dbname = 'mtk_2013c';
+    my $user = 'gisuser';
+    my $password = 'o92x3iytH';
 	my $db = DBIx::Simple->connect( "DBI:mysql:database=$dbname", $user, $password, { RaiseError => 1 }) or die "connect: $@";
 	$db->{lc_columns} = 0;
 	$db->{dbh}{mysql_enable_utf8} = 1;
@@ -193,7 +178,7 @@ sub fetchData {
 sub getKuntaByName {
     my $self = shift;
     my $name = shift;
-    my $db = $self->getMtkDB2;
+    my $db = $self->getMtkDB3;
     my ($kunta_nro, $actual_name) = $db->query(q{ SELECT id, kunta_name_fin FROM kunta WHERE kunta_name_fin = ? OR kunta_name_swe = ? }, $name, $name)->list;
     die "query: $@" if $@;
     return wantarray ? ($kunta_nro, $actual_name) : $kunta_nro;
@@ -203,7 +188,7 @@ sub getKuntaName {
     my $self = shift;
     my $kunta_nro = shift;
         
-    my $db = $self->getMtkDB2;
+    my $db = $self->getMtkDB3;
     my $name = $db->query(q{ SELECT kunta_name_fin FROM kunta WHERE id = ? }, $kunta_nro)->list;
     
     return $name;
